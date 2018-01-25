@@ -1,0 +1,433 @@
+package com.hashraven.scala
+// Hash Raven
+import scala.io.Source
+import java.io.File
+import org.apache.commons.codec.digest.DigestUtils
+import org.apache.spark._
+import org.apache.spark.SparkContext._
+import org.apache.log4j._
+import java.security.MessageDigest
+import com.google.common.hash.Hashing
+import com.twmacinta.util
+import fr.cryptohash
+
+// TODO 01:  : as commands in results list is not going to work
+// TODO 02:  Switch to GPU
+// TODO 04:  Fix crash on ^
+
+object HashRaven {
+  var hashesFound = 0l
+  var outputFilename = ""
+  //val fastMD5 = new com.twmacinta.util.MD5()
+  //val sphMD5 = new fr.cryptohash.MD5()
+  
+  def main(args: Array[String]) {
+    if (args.length > 0) {
+      if (args(0).equals("test")) {
+        // Test Suite
+        var fileHandle = new java.io.PrintWriter(new File("data/sample.hsh"))
+        fileHandle.write(DigestUtils.md5Hex("goldfish4") + "\r\n")
+        fileHandle.close
+          
+        fileHandle = new java.io.PrintWriter(new File("data/sample.dct"))
+        fileHandle.write("goldfish" + "\r\n")
+        fileHandle.close
+    
+        fileHandle = new java.io.PrintWriter(new File("data/sample.rul"))
+        fileHandle.write("$4" + "\r\n")
+        fileHandle.close
+    
+        hashAttempt()    
+        generateList()
+      } else if (args(0).equals("generate")) {
+        generateRandomRules(args(1).toInt)
+      } else {
+        hashAttempt()    
+        generateList()
+      }      
+    } else {
+      hashAttempt()    
+      generateList()
+    }
+  }
+  
+  def getListOfFiles(dir: File):List[File] = dir.listFiles.filter(_.isFile).toList
+  
+  def generateRandomRules(quantity:Int) {
+    // Generate random String of Rule Items
+    var ruleList = scala.collection.mutable.Buffer[String]()
+    for(i <- 0 until quantity) {
+      var numberOfRules = Math.ceil(10 * Math.random()).toInt;
+      var thisRule = ""
+      
+      for(rule <- 0 until numberOfRules) {
+        var randomRoll = Math.floor(29 * Math.random()).toInt;
+        if (randomRoll == 0) {thisRule += ":"}
+        else if (randomRoll == 1) {thisRule += "l"}
+        else if (randomRoll == 2) {thisRule += "u"}
+        else if (randomRoll == 4) {thisRule += "c"}
+        else if (randomRoll == 5) {thisRule += "C"}
+        else if (randomRoll == 6) {thisRule += "t"}
+        else if (randomRoll == 7) {thisRule += "T" + Math.ceil(20 * Math.random()).toInt}
+        else if (randomRoll == 8) {thisRule += "r"}
+        else if (randomRoll == 9) {thisRule += "d"}
+        else if (randomRoll == 10) {thisRule += "p" + Math.ceil(5 * Math.random()).toInt}
+        else if (randomRoll == 11) {thisRule += "f"}
+        else if (randomRoll == 12) {thisRule += "{"}
+        else if (randomRoll == 13) {thisRule += "}"}
+        else if (randomRoll == 14) {thisRule += "$" + Math.ceil(20 * Math.random()).toInt}
+        else if (randomRoll == 15) {thisRule += "^" + Math.ceil(20 * Math.random()).toInt}
+        else if (randomRoll == 16) {thisRule += "["}
+        else if (randomRoll == 17) {thisRule += "]"}
+        else if (randomRoll == 18) {thisRule += "D" + Math.ceil(20 * Math.random()).toInt}
+        else if (randomRoll == 19) {thisRule += "x" + Math.ceil(20 * Math.random()).toInt + Math.ceil(20 * Math.random()).toInt}
+        else if (randomRoll == 20) {thisRule += "O" + Math.ceil(20 * Math.random()).toInt + Math.ceil(20 * Math.random()).toInt}
+        else if (randomRoll == 21) {thisRule += "i" + Math.ceil(20 * Math.random()).toInt + Math.ceil(255 * Math.random()).toInt.toChar}
+        else if (randomRoll == 22) {thisRule += "o" + Math.ceil(20 * Math.random()).toInt + Math.ceil(255 * Math.random()).toInt.toChar}
+        else if (randomRoll == 23) {thisRule += "'" + Math.ceil(20 * Math.random()).toInt}
+        else if (randomRoll == 24) {thisRule += "s" + Math.ceil(255 * Math.random()).toInt.toChar + Math.ceil(255 * Math.random()).toInt.toChar}
+        else if (randomRoll == 25) {thisRule += "@" + Math.ceil(255 * Math.random()).toInt.toChar}
+        else if (randomRoll == 26) {thisRule += "z" + Math.ceil(5 * Math.random()).toInt}
+        else if (randomRoll == 27) {thisRule += "Z" + Math.ceil(5 * Math.random()).toInt}
+        else if (randomRoll == 28) {thisRule += "q"}
+        
+        if (rule != numberOfRules) {thisRule += " "}        
+      }      
+
+      ruleList += thisRule
+    }
+    
+    // Save Rule File
+    val pw = new java.io.PrintWriter(new File("data/random-" + System.currentTimeMillis() + ".rul"))
+    for(i <- 0 until ruleList.length) {
+      pw.write(ruleList(i) + "\r\n")      
+    }
+    pw.close
+  }    
+    
+  def generateList() {
+    // Load Rules
+    val ruleSetList = new java.io.File("data/").listFiles.filter(_.getName.endsWith(".rul"))
+    var ruleList = scala.collection.mutable.Buffer[String]()
+
+    for(i <- 0 until ruleSetList.length) {
+      for (line <- Source.fromFile(ruleSetList(i)).getLines) {
+        ruleList += line;
+      }
+    }    
+
+    // Load Results
+    val resultsListList = new java.io.File("data/").listFiles.filter(_.getName.endsWith(".rsl"))
+    var resultsList = scala.collection.mutable.Buffer[String]()
+
+    for(i <- 0 until resultsListList.length) {
+      for (line <- Source.fromFile(resultsListList(i)).getLines) {
+        resultsList += line;
+      }
+    }    
+    
+    // format hash:plaintext:rule
+    
+    // Create Rule Order from Results
+    var ruleOrder = scala.collection.mutable.Buffer[String]()
+    for(outerRule <- 0 until ruleList.length) {
+      
+      // Declare Hits Collection
+      var ruleHits = scala.collection.mutable.Buffer[Int]()
+      for(innerRule <- 0 until ruleList.length) {
+        ruleHits += 0
+      }
+            
+      // Tally Up Hits
+      for(innerRule <- 0 until ruleList.length) {
+        for(result <- 0 until resultsList.length) {
+          val resultsArray = resultsList(result).split(":")
+          if (resultsArray(2).equals(ruleList(innerRule))) {
+            ruleHits(innerRule) += 1
+          }
+        }
+      }
+      
+      // Find Best Rule
+      var bestRule = "";
+      var bestRuleCount = 0;
+      for(bestRuleCheck <- 0 until ruleHits.length) {
+        if (ruleHits(bestRuleCheck) > bestRuleCount) {
+          bestRule = ruleList(bestRuleCheck)
+          bestRuleCount = ruleHits(bestRuleCheck)
+        }
+      }
+
+      ruleOrder += bestRule;
+
+      // Remove All Entries Solved by Best Rule
+      var hashesBroken  = scala.collection.mutable.Buffer[String]()
+      for(result <- 0 until resultsList.length) {
+        val resultsArray = resultsList(result).split(":")
+        if (resultsArray(2).equals(bestRule)) {
+          for(result <- 0 until resultsList.length) {
+            hashesBroken += resultsArray(0)
+          }
+        }
+        
+        for(result <- 0 until resultsList.length) {
+          val resultsArray = resultsList(result).split(":")
+          for(brokenHash <- 0 until hashesBroken.length) {
+            if (resultsArray(0).equals(hashesBroken(brokenHash))) {
+              resultsList(result) = "null:null:null";
+            }
+          }
+        }
+      }
+    }
+    
+    // Save Rule List (format rule)
+    val pw = new java.io.PrintWriter(new File("data/ordered-" + System.currentTimeMillis() + ".rul"))
+    for(i <- 0 until ruleOrder.length) {
+      pw.write(ruleOrder(i) + "\r\n")
+    }
+    pw.close
+  }
+  
+  def hashAttempt() {
+    // Set the log level to only print errors
+    Logger.getLogger("org").setLevel(Level.ERROR)
+        
+    // Create a SparkContext using every core of the local machine
+    val sparkContext = new SparkContext("local[*]", "HashRaven")
+
+    // Loads Hashes
+    System.out.println("Loading Hashes")
+    val dbList = new java.io.File("data/").listFiles.filter(_.getName.endsWith(".hsh"))
+    var hashSortedHashes = scala.collection.mutable.Map[String, Boolean]()
+    
+    for(i <- 0 until dbList.length) {
+      for (line <- Source.fromFile(dbList(i))(scala.io.Codec.ISO8859).getLines) {
+        val hashesArray = line.split(":")
+        for (i <- 0 until hashesArray.length) {
+          if (hashesArray(i).length() == 32) {
+            if (hashSortedHashes.contains(hashesArray(i))) {
+              
+            } else {
+              hashSortedHashes(hashesArray(i)) = true
+            }
+          }
+        }
+      }
+    }
+
+    var broadcastHashes = sparkContext.broadcast(hashSortedHashes)
+
+    // Load Dicts as Lines
+    System.out.println("Loading Dictionaries as Lines")
+    val dictLines = sparkContext.textFile("data/*.dct")
+    
+    // Load Rules
+    // TODO 07: These Need to be Preprocessed - they don't get run if they don't have spaces
+    System.out.println("Loading Rules")
+    var ruleList = scala.collection.mutable.Buffer[String]()
+    val ruleSetList = new java.io.File("data/").listFiles.filter(_.getName.endsWith(".rul"))
+
+    for(i <- 0 until ruleSetList.length) {
+      for (line <- Source.fromFile(ruleSetList(i))(scala.io.Codec.ISO8859).getLines) {
+        ruleList += line
+      }
+    }
+        
+    // Create New Results File
+    outputFilename = "data/result-" + System.currentTimeMillis() + ".rsl" 
+    
+    // Attempt Hashes
+    System.out.println("Beginning Hashing against " + ruleList.length.toLong + " Rules")
+    val startingTime = System.currentTimeMillis()
+    var lastTime = startingTime
+    var hashesHashedTotal = 0l
+    
+    var rule = 0
+    while (rule < ruleList.length) {  
+      // Split the Rule into Rules
+      var rules = ruleList(rule).split("\\s+")
+
+      // Duplicate DictLines
+      val editableLines = dictLines
+      
+      // For Each
+      dictLines.foreach(thisLine => {hashLineWithCPU(thisLine, rules, broadcastHashes)})      
+
+      // TODO 06: Call hashLineWithGPU
+      
+      // Print Progress After Each Rule
+      val timeElapsed = (System.currentTimeMillis() - lastTime)
+      var stringOut = "One Rule Tried Against All Dictionaries and Hashes in " + timeElapsed + " MS (Finished: " + (rule + 1) + " / " + ruleList.length + ") - (" + hashesFound + " Found)"
+
+      lastTime = System.currentTimeMillis()
+      
+      var secondsPerRule =  ((lastTime.toLong - startingTime.toLong)) / (rule + 1)
+      var estimatedSeconds = ((ruleList.length - (rule + 1)) * secondsPerRule) / 1000L
+      var estimatedMinutes = estimatedSeconds.toLong / 60L; estimatedSeconds -= estimatedMinutes.toLong  * 60L
+      var estimatedHours = estimatedMinutes.toLong / 60L; estimatedMinutes -= estimatedHours.toLong  * 60L
+      var estimatedDays = estimatedHours.toLong / 24L; estimatedHours -= estimatedDays.toLong  * 24L
+      var estimatedYears = estimatedDays.toLong / 356L; estimatedDays -= estimatedYears.toLong  * 356L
+      stringOut += " - Time Left: " + estimatedYears + "y:" + estimatedDays + "d:" + estimatedHours  + "h:" + estimatedMinutes  + "m:" + estimatedSeconds + "s Left)"
+      System.out.println("")
+      System.out.println(stringOut)
+
+      var thisRule = 0
+      while (thisRule < rules.length) {
+        System.out.println(rules(thisRule))
+        thisRule += 1
+      }
+
+      rule += 1
+    }
+    
+    val endingTime = System.currentTimeMillis() - startingTime
+    System.out.println("Hashing Complete (" + endingTime + " MS Elapsed)")
+  }
+
+  // Line Hashing Function (GPU)
+  // TODO 05: Use GPUEnabler to Do This (https://github.com/IBMSparkGPU/GPUEnabler)
+  
+  // Line Hashing Function (CPU)
+  def hashLineWithCPU(word:String, rules:Array[String], broadcastHashes:org.apache.spark.broadcast.Broadcast[scala.collection.mutable.Map[String, Boolean]]) {
+    // Get the Word
+    val thisWord = getWord(rules, word)
+
+    // Hash the Result (Apache)
+    val hashedWord = DigestUtils.md5Hex(thisWord)
+    
+    // Hash the Results (Google Guava)
+    //val hashedWord = Hashing.md5().hashString(thisWord).toString()
+    
+    // Hash the Results (Fast-MD5)
+    //fastMD5.Init()
+    //fastMD5.Update(thisWord, null)
+    //val hashedWord = fastMD5.asHex()
+    
+    // Hash the Results (SPHLib by France!)
+    //sphMD5.reset()
+    //sphMD5.
+    //val hashedWord = fr.cryptohash.MD5
+    
+    // TODO 03: rules.toString() does not work properly
+    // Check the Hash
+    if (broadcastHashes.value.contains(hashedWord)) {
+      val resultString = hashedWord + ":" + thisWord + ":" + rules.toString() // format hash:plaintext:rule
+      val fileHandle = new java.io.PrintWriter(new File(outputFilename))
+      fileHandle.write(resultString + "\r\n")      
+      fileHandle.close
+          
+      hashesFound += 1
+    }
+  }
+
+  def getWord(rules:Array[String], word:String):String = {
+    // Apply Rule to Word
+    var editableWord = word
+    
+    var thisRule = 0
+    while (thisRule < rules.length) {
+      rules(thisRule).charAt(0) match {
+        case ':' => 
+        case 'l' => editableWord = editableWord.toLowerCase() // Lower Case All Letters
+        case 'u' => editableWord = editableWord.toUpperCase() // Upper Case All Letters
+        case 'c' =>         
+          if (editableWord.length > 0) {
+            editableWord = editableWord(0).toUpper + editableWord.substring(1).toLowerCase()
+          } // Capitalize First Letter, Lower Case All Others
+        case 'C' =>         
+          if (editableWord.length > 0) {
+            editableWord = editableWord(0).toUpper + editableWord.substring(1).toUpperCase()
+          }
+        case 't' =>
+          val newWord = ""; 
+          for (letter <- 0 until editableWord.length) {
+            if (editableWord(letter).isUpper) {
+              newWord + editableWord(letter).toLower
+            } else if (editableWord(letter).isLower) {
+              newWord + editableWord(letter).toUpper
+            } else {
+              newWord + editableWord(letter)
+            }
+          }
+          editableWord = newWord; // Toggle All Cases ()
+        case 'T' =>
+          val newWord = editableWord.substring(0, rules(thisRule).charAt(1).toInt); 
+          if (editableWord(rules(thisRule).charAt(1)).isUpper) {
+            newWord + editableWord(rules(thisRule).charAt(1)).toLower
+          } else if (editableWord(rules(thisRule).charAt(1)).isLower) {
+            newWord + editableWord(rules(thisRule).charAt(1)).toUpper
+          } else {
+            newWord + editableWord(rules(thisRule).charAt(1))
+          }
+          editableWord = newWord + editableWord.substring(rules(thisRule).charAt(1).toInt + 1, editableWord.length());  // Toggle Case at Position N
+        case 'r' => editableWord = editableWord.reverse // Reverse the Word
+        case 'd' => editableWord = editableWord + editableWord // Duplicate the Word
+        case 'p' => val originalWord = editableWord; for (thisRule <- 0 until rules(thisRule).charAt(1).toInt) {editableWord = editableWord + originalWord} // Duplicate the Word Reversed
+        case 'f' => editableWord = editableWord + editableWord.reverse // Duplicate the Word Reversed
+        case '{' => editableWord = editableWord.substring(1) + editableWord.substring(0) // Move First Character to End
+        case '}' => editableWord = editableWord.substring(editableWord.length - 1) + editableWord.dropRight(1) // Move Last Character to Beginning
+        case '$' => editableWord = editableWord + rules(thisRule).charAt(1) // Append Character X to End
+        case '^' => editableWord = rules(thisRule).charAt(1) + editableWord // Prepend Character X to Beginning
+        case '[' => editableWord = editableWord.substring(1) // Delete First Character
+        case ']' => editableWord = editableWord.dropRight(1) // Delete Last Character
+        case 'D' => 
+          if (editableWord.length >= rules(thisRule).charAt(1).toInt) {
+            editableWord = editableWord.substring(0, rules(thisRule).charAt(1).toInt) + editableWord.substring(rules(thisRule).charAt(1).toInt + 1, editableWord.length())
+          } // Delete Character at Position N
+        case 'x' => 
+          if (editableWord.length >= rules(thisRule).charAt(1).toInt && editableWord.length >= rules(thisRule).charAt(2).toInt ) {
+            editableWord = editableWord.substring(rules(thisRule).charAt(2).toInt, rules(thisRule).charAt(1).toInt)
+          } // Keeps only N characters starting at M
+        case 'O' => 
+          if (editableWord.length >= rules(thisRule).charAt(1).toInt + rules(thisRule).charAt(2).toInt) {
+            editableWord = editableWord.substring(0, rules(thisRule).charAt(2).toInt - 1) + editableWord.substring(rules(thisRule).charAt(2).toInt + rules(thisRule).charAt(1).toInt,editableWord.length)  
+          } // Delete N characters starting at M
+        case 'i' =>
+          if (editableWord.length >= rules(thisRule).charAt(1).toInt + rules(thisRule).charAt(2).toInt) {
+            editableWord = editableWord.substring(0, rules(thisRule).charAt(1).toInt) + rules(thisRule).charAt(2) + editableWord.substring(rules(thisRule).charAt(1).toInt, editableWord.length())  
+          } // Insert Character X at Position N
+        case 'o' =>
+          if (editableWord.length >= rules(thisRule).charAt(1).toInt) {
+            editableWord = editableWord.substring(0, rules(thisRule).charAt(1).toInt) + rules(thisRule).charAt(2) + editableWord.substring(rules(thisRule).charAt(1).toInt + 1, editableWord.length())
+          } // Overwrite Character X at Position N
+        case ''' =>
+          if (editableWord.length >= rules(thisRule).charAt(1).toInt) {
+            editableWord = editableWord.substring(0, rules(thisRule).charAt(1).toInt - 1)
+          } // Delete Characters starting at Position N
+        case 's' =>
+          var newWord = ""
+          for (letter <- 0 until editableWord.length) {
+            if (editableWord(letter).equals(rules(thisRule).charAt(1))) {
+              newWord += rules(thisRule).charAt(2)
+            } else {
+              newWord += editableWord(letter)
+            }
+          }        
+          editableWord = newWord // Replace All Instances of X with Y
+        case '@' =>
+          var newWord = ""; 
+          for (letter <- 0 until editableWord.length) {
+            if (editableWord(letter).equals(rules(thisRule).charAt(1))) {
+              
+            } else {
+              newWord += editableWord(letter)
+            }
+          }        
+          editableWord = newWord // Delete All Instances of X
+        case 'z' => for (thisRule <- 0 until rules(thisRule).charAt(1).toInt) {editableWord = editableWord(0) + editableWord} // Duplicate First Character N Times
+        case 'Z' => for (thisRule <- 0 until rules(thisRule).charAt(1).toInt) {editableWord = editableWord + editableWord(editableWord.length - 1)} // Duplicate Last Character N Times
+        case 'q' => 
+          var newWord = ""; 
+          for (letter <- 0 until editableWord.length) {
+            newWord += editableWord(letter) + editableWord(letter)
+          }
+          editableWord = newWord // Duplicate Every Character          
+      }
+      
+      thisRule += 1
+    }
+    
+    return editableWord
+  }
+}
